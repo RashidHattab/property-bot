@@ -1,4 +1,4 @@
-import sqlite3
+import psycopg2
 import datetime
 import calendar
 import os
@@ -7,6 +7,9 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from apscheduler.schedulers.background import BackgroundScheduler
+
+# --- رابط قاعدة البيانات السحابية (Neon) ---
+DB_URL = "postgresql://neondb_owner:npg_1srtvPOHay2C@ep-orange-grass-axfiijnj-pooler.c-4.us-east-2.aws.neon.tech/neondb?sslmode=require"
 
 # --- خادم الويب (Render) ---
 class SimpleHandler(BaseHTTPRequestHandler):
@@ -21,29 +24,32 @@ def run_web_server():
     server.serve_forever()
 
 def get_db_connection():
-    return sqlite3.connect('property_manager.db')
+    return psycopg2.connect(DB_URL)
 
 def init_db():
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS tenants (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                property TEXT,
-                rent REAL,
-                debt REAL 
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS payments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                tenant_id INTEGER,
-                amount REAL,
-                date TEXT,
-                FOREIGN KEY(tenant_id) REFERENCES tenants(id)
-            )
-        ''')
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tenants (
+            id SERIAL PRIMARY KEY,
+            name TEXT,
+            property TEXT,
+            rent REAL,
+            debt REAL 
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS payments (
+            id SERIAL PRIMARY KEY,
+            tenant_id INTEGER,
+            amount REAL,
+            date TEXT,
+            FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+        )
+    ''')
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 init_db()
 
@@ -64,7 +70,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✏️ تعديل بيانات مستأجر", callback_data="menu_edit")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    text = "🏠 **نظام إدارة العقارات والأملاك**\nاختر العملية التي تريدها:"
+    text = "🏠 **نظام إدارة العقارات والأملاك (مربوط سحابياً ☁️)**\nاختر العملية التي تريدها:"
     
     if update.message:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
@@ -83,11 +89,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "menu_profit":
         thursdays, month, year = get_thursdays_count()
         expenses = (thursdays * 145) + 120
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT SUM(rent) FROM tenants WHERE name NOT LIKE '%فؤاد%'")
-            result = cursor.fetchone()
-            total_income = result[0] if result[0] else 0
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT SUM(rent) FROM tenants WHERE name NOT LIKE '%فؤاد%'")
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        
+        total_income = result[0] if result[0] else 0
         net_profit = total_income - expenses
         
         response = (
@@ -101,10 +111,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(response, reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown")
 
     elif data == "list_all":
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, name, property, rent, debt FROM tenants")
-            rows = cursor.fetchall()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, property, rent, debt FROM tenants")
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
 
         if not rows:
             await query.message.edit_text("لا يوجد مستأجرين مسجلين حالياً.", reply_markup=InlineKeyboardMarkup(back_btn))
@@ -123,10 +135,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(response, reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown")
 
     elif data in ["menu_details", "menu_pay", "menu_delete", "menu_edit"]:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, name, property FROM tenants")
-            tenants = cursor.fetchall()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, property FROM tenants")
+        tenants = cursor.fetchall()
+        cursor.close()
+        conn.close()
 
         if not tenants:
             await query.message.edit_text("لا يوجد مستأجرين مسجلين.", reply_markup=InlineKeyboardMarkup(back_btn))
@@ -155,12 +169,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("det_"):
         tenant_id = int(data.split("_")[1])
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT name, property, rent, debt FROM tenants WHERE id = ?", (tenant_id,))
-            tenant = cursor.fetchone()
-            cursor.execute("SELECT amount, date FROM payments WHERE tenant_id = ? ORDER BY id DESC LIMIT 5", (tenant_id,))
-            payments = cursor.fetchall()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, property, rent, debt FROM tenants WHERE id = %s", (tenant_id,))
+        tenant = cursor.fetchone()
+        cursor.execute("SELECT amount, date FROM payments WHERE tenant_id = %s ORDER BY id DESC LIMIT 5", (tenant_id,))
+        payments = cursor.fetchall()
+        cursor.close()
+        conn.close()
         
         bal = tenant[3]
         status = "🟢 رصيد إضافي لصالحه" if bal > 0 else ("🔴 مديون" if bal < 0 else "⚪ رصيده صفر")
@@ -177,19 +193,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("del_"):
         tenant_id = int(data.split("_")[1])
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM tenants WHERE id = ?", (tenant_id,))
-            cursor.execute("DELETE FROM payments WHERE tenant_id = ?", (tenant_id,))
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM payments WHERE tenant_id = %s", (tenant_id,))
+        cursor.execute("DELETE FROM tenants WHERE id = %s", (tenant_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
         await query.message.edit_text("✅ تم الحذف بنجاح.", reply_markup=InlineKeyboardMarkup(back_btn))
 
-    # --- التحديث الجديد: أزرار التعديل ---
     elif data.startswith("edit_"):
         tenant_id = int(data.split("_")[1])
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT name, property, rent, debt FROM tenants WHERE id = ?", (tenant_id,))
-            t = cursor.fetchone()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, property, rent, debt FROM tenants WHERE id = %s", (tenant_id,))
+        t = cursor.fetchone()
+        cursor.close()
+        conn.close()
         
         edit_keyboard = [
             [InlineKeyboardButton("✏️ تعديل الاسم", callback_data=f"editf_name_{tenant_id}"), InlineKeyboardButton("✏️ تعديل العقار", callback_data=f"editf_prop_{tenant_id}")],
@@ -204,7 +224,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                f"👇 **ماذا تريد أن تعدل؟ (اختر من الأزرار):**")
         await query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(edit_keyboard), parse_mode="Markdown")
 
-    # معالجة الضغط على أحد أزرار التعديل (الاسم، العقار، الإيجار، الرصيد)
     elif data.startswith("editf_"):
         parts = data.split("_")
         field_code = parts[1]
@@ -226,10 +245,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['step'] = 'waiting_payment'
         context.user_data['tenant_id'] = tenant_id
         
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT name, debt FROM tenants WHERE id = ?", (tenant_id,))
-            t_info = cursor.fetchone()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, debt FROM tenants WHERE id = %s", (tenant_id,))
+        t_info = cursor.fetchone()
+        cursor.close()
+        conn.close()
 
         await query.message.edit_text(
             f"💰 **{t_info[0]}** (الرصيد الحالي: {t_info[1]} د.أ)\nأرسل **المبلغ المدفوع** كرقم فقط (مثال: 50):",
@@ -243,7 +264,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
         )
 
-# --- معالجة النصوص للمدخلات ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = context.user_data.get('step')
     back_btn = [[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")]]
@@ -253,17 +273,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             amount = float(update.message.text.strip())
             tenant_id = context.user_data['tenant_id']
             
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT debt, name FROM tenants WHERE id = ?", (tenant_id,))
-                current_balance, name = cursor.fetchone()
-                
-                new_balance = current_balance + amount
-                cursor.execute("UPDATE tenants SET debt = ? WHERE id = ?", (new_balance, tenant_id))
-                
-                payment_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                cursor.execute("INSERT INTO payments (tenant_id, amount, date) VALUES (?, ?, ?)", (tenant_id, amount, payment_date))
-                
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT debt, name FROM tenants WHERE id = %s", (tenant_id,))
+            current_balance, name = cursor.fetchone()
+            
+            new_balance = current_balance + amount
+            cursor.execute("UPDATE tenants SET debt = %s WHERE id = %s", (new_balance, tenant_id))
+            
+            payment_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+            cursor.execute("INSERT INTO payments (tenant_id, amount, date) VALUES (%s, %s, %s)", (tenant_id, amount, payment_date))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
             context.user_data.clear()
             status = "موجب (له رصيد)" if new_balance > 0 else ("سالب (عليه إيجار)" if new_balance < 0 else "صفر")
             await update.message.reply_text(
@@ -278,16 +302,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = update.message.text.strip()
             name, prop, rent, balance = [x.strip() for x in text.split('|')]
             
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO tenants (name, property, rent, debt) VALUES (?, ?, ?, ?)", (name, prop, float(rent), float(balance)))
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO tenants (name, property, rent, debt) VALUES (%s, %s, %s, %s)", (name, prop, float(rent), float(balance)))
+            conn.commit()
+            cursor.close()
+            conn.close()
             
             context.user_data.clear()
             await update.message.reply_text(f"✅ تمت إضافة **{name}** بنجاح!", reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown")
         except Exception:
             await update.message.reply_text("خطأ! الصيغة الصحيحة:\nالاسم | العقار | الإيجار | الرصيد")
             
-    # --- التحديث الجديد: استلام الحقل المراد تعديله ---
     elif step == 'waiting_edit_field':
         field_code = context.user_data.get('edit_field')
         tenant_id = context.user_data.get('tenant_id')
@@ -305,9 +331,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif field_code == "prop":
                 db_col = "property"
                 
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(f"UPDATE tenants SET {db_col} = ? WHERE id = ?", (new_val, tenant_id))
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(f"UPDATE tenants SET {db_col} = %s WHERE id = %s", (new_val, tenant_id))
+            conn.commit()
+            cursor.close()
+            conn.close()
                 
             context.user_data.clear()
             await update.message.reply_text("✅ تم التعديل والحفظ بنجاح!", reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown")
@@ -318,9 +347,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("استخدم الأزرار لإدارة النظام. أرسل /start لعرض القائمة.")
 
 def monthly_rent_update():
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("UPDATE tenants SET debt = debt - rent")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE tenants SET debt = debt - rent")
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 if __name__ == '__main__':
     server_thread = threading.Thread(target=run_web_server, daemon=True)
