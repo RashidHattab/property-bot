@@ -61,7 +61,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("👤 كشف حساب", callback_data="menu_details"), InlineKeyboardButton("💰 تسجيل دفعة", callback_data="menu_pay")],
         [InlineKeyboardButton("📈 حساب صافي الأرباح", callback_data="menu_profit")],
         [InlineKeyboardButton("➕ إضافة مستأجر", callback_data="menu_add"), InlineKeyboardButton("❌ حذف مستأجر", callback_data="menu_delete")],
-        [InlineKeyboardButton("✏️ تعديل بيانات مستأجر (تصحيح الأخطاء)", callback_data="menu_edit")]
+        [InlineKeyboardButton("✏️ تعديل بيانات مستأجر", callback_data="menu_edit")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = "🏠 **نظام إدارة العقارات والأملاك**\nاختر العملية التي تريدها:"
@@ -115,7 +115,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for row in rows:
             bal = row[4]
-            status = "🟢 له رصيد (موجب)" if bal > 0 else ("🔴 عليه إيجار (سالب)" if bal < 0 else "⚪ مصفر")
+            status = "🟢 له رصيد" if bal > 0 else ("🔴 عليه إيجار" if bal < 0 else "⚪ مصفر")
             response += f"👤 {row[1]} | 🏠 {row[2]}\n💰 الإيجار: {row[3]} | 💳 الرصيد: **{bal}** ({status})\n---\n"
             total_rent += row[3]
         
@@ -183,20 +183,42 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cursor.execute("DELETE FROM payments WHERE tenant_id = ?", (tenant_id,))
         await query.message.edit_text("✅ تم الحذف بنجاح.", reply_markup=InlineKeyboardMarkup(back_btn))
 
+    # --- التحديث الجديد: أزرار التعديل ---
     elif data.startswith("edit_"):
         tenant_id = int(data.split("_")[1])
-        context.user_data['step'] = 'waiting_edit'
-        context.user_data['tenant_id'] = tenant_id
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT name, property, rent, debt FROM tenants WHERE id = ?", (tenant_id,))
             t = cursor.fetchone()
         
-        msg = (f"✏️ **تعديل بيانات: {t[0]}**\n\n"
-               f"البيانات الحالية:\n"
-               f"الاسم: {t[0]}\nالعقار: {t[1]}\nالإيجار: {t[2]}\nالرصيد: {t[3]}\n\n"
-               f"أرسل البيانات الجديدة بنفس الترتيب مفصولة بـ `|`:\n"
-               f"`الاسم | العقار | الإيجار | الرصيد`")
+        edit_keyboard = [
+            [InlineKeyboardButton("✏️ تعديل الاسم", callback_data=f"editf_name_{tenant_id}"), InlineKeyboardButton("✏️ تعديل العقار", callback_data=f"editf_prop_{tenant_id}")],
+            [InlineKeyboardButton("💰 تعديل الإيجار", callback_data=f"editf_rent_{tenant_id}"), InlineKeyboardButton("💳 تعديل الرصيد", callback_data=f"editf_bal_{tenant_id}")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="menu_edit")]
+        ]
+        
+        msg = (f"👤 **المستأجر:** {t[0]}\n"
+               f"🏠 **العقار:** {t[1]}\n"
+               f"💰 **الإيجار:** {t[2]}\n"
+               f"💳 **الرصيد:** {t[3]}\n\n"
+               f"👇 **ماذا تريد أن تعدل؟ (اختر من الأزرار):**")
+        await query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(edit_keyboard), parse_mode="Markdown")
+
+    # معالجة الضغط على أحد أزرار التعديل (الاسم، العقار، الإيجار، الرصيد)
+    elif data.startswith("editf_"):
+        parts = data.split("_")
+        field_code = parts[1]
+        tenant_id = int(parts[2])
+        
+        context.user_data['step'] = 'waiting_edit_field'
+        context.user_data['edit_field'] = field_code
+        context.user_data['tenant_id'] = tenant_id
+        
+        field_names = {"name": "الاسم", "prop": "العقار", "rent": "الإيجار", "bal": "الرصيد"}
+        msg = f"✏️ حسناً، أرسل **{field_names[field_code]} الجديد** الآن في رسالة:"
+        if field_code in ["rent", "bal"]:
+            msg += "\n*(الرجاء كتابة رقم فقط)*"
+            
         await query.message.edit_text(msg, reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown")
 
     elif data.startswith("pay_"):
@@ -217,10 +239,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "menu_add":
         context.user_data['step'] = 'waiting_add'
         await query.message.edit_text(
-            "➕ أرسل بيانات المستأجر الجديد هكذا:\n`الاسم | العقار | الإيجار | الرصيد`\n*(ملاحظة: إذا كان عليه دين اكتبه بالسالب مثل -100، وإذا له رصيد اكتبه بالموجب 100)*\n\nمثال: `أحمد | شقة 2 | 150 | 0`",
+            "➕ أرسل بيانات المستأجر الجديد هكذا:\n`الاسم | العقار | الإيجار | الرصيد`\n*(مثال: أحمد | شقة 2 | 150 | 0)*",
             reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
         )
 
+# --- معالجة النصوص للمدخلات ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = context.user_data.get('step')
     back_btn = [[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")]]
@@ -235,7 +258,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 cursor.execute("SELECT debt, name FROM tenants WHERE id = ?", (tenant_id,))
                 current_balance, name = cursor.fetchone()
                 
-                # الدفع يزيد الرصيد نحو الموجب
                 new_balance = current_balance + amount
                 cursor.execute("UPDATE tenants SET debt = ? WHERE id = ?", (new_balance, tenant_id))
                 
@@ -245,7 +267,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.clear()
             status = "موجب (له رصيد)" if new_balance > 0 else ("سالب (عليه إيجار)" if new_balance < 0 else "صفر")
             await update.message.reply_text(
-                f"✅ تم تسجيل الدفعة: **{amount} د.أ** لـ **{name}**.\n💳 الرصيد الجديد: **{new_balance} د.أ** ({status})",
+                f"✅ تم تسجيل الدفعة بنجاح.\n💳 الرصيد الجديد: **{new_balance} د.أ** ({status})",
                 reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
             )
         except Exception:
@@ -265,28 +287,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await update.message.reply_text("خطأ! الصيغة الصحيحة:\nالاسم | العقار | الإيجار | الرصيد")
             
-    elif step == 'waiting_edit':
+    # --- التحديث الجديد: استلام الحقل المراد تعديله ---
+    elif step == 'waiting_edit_field':
+        field_code = context.user_data.get('edit_field')
+        tenant_id = context.user_data.get('tenant_id')
+        new_val = update.message.text.strip()
+        
         try:
-            text = update.message.text.strip()
-            name, prop, rent, balance = [x.strip() for x in text.split('|')]
-            tenant_id = context.user_data['tenant_id']
-            
+            if field_code == "rent":
+                new_val = float(new_val)
+                db_col = "rent"
+            elif field_code == "bal":
+                new_val = float(new_val)
+                db_col = "debt"
+            elif field_code == "name":
+                db_col = "name"
+            elif field_code == "prop":
+                db_col = "property"
+                
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("UPDATE tenants SET name=?, property=?, rent=?, debt=? WHERE id=?", 
-                               (name, prop, float(rent), float(balance), tenant_id))
-            
+                cursor.execute(f"UPDATE tenants SET {db_col} = ? WHERE id = ?", (new_val, tenant_id))
+                
             context.user_data.clear()
-            await update.message.reply_text(f"✅ تم تحديث بيانات **{name}** بنجاح!", reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown")
-        except Exception:
-            await update.message.reply_text("خطأ! تأكد من إرسال البيانات بالصيغة:\nالاسم | العقار | الإيجار | الرصيد")
+            await update.message.reply_text("✅ تم التعديل والحفظ بنجاح!", reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown")
+            
+        except ValueError:
+            await update.message.reply_text("❌ خطأ! الإيجار والرصيد يجب أن تكون أرقاماً فقط (مثال: 150).")
     else:
         await update.message.reply_text("استخدم الأزرار لإدارة النظام. أرسل /start لعرض القائمة.")
 
 def monthly_rent_update():
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        # نزول الإيجار الشهري ينقص من الرصيد (يأخذه للسالب)
         cursor.execute("UPDATE tenants SET debt = debt - rent")
 
 if __name__ == '__main__':
