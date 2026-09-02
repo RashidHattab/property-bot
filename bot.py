@@ -1,8 +1,23 @@
 import sqlite3
 import datetime
+import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from apscheduler.schedulers.background import BackgroundScheduler
+
+# خادم ويب وهمي بسيط جداً لترضية منصة Render المجانية وإبقاء البوت شغالاً
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+    server.serve_forever()
 
 def init_db():
     conn = sqlite3.connect('property_manager.db')
@@ -30,7 +45,6 @@ def init_db():
 
 init_db()
 
-# القائمة الرئيسية الدائمة
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     keyboard = [
@@ -49,7 +63,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif update.callback_query:
         await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
-# التعامل مع الضغط على الأزرار
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -168,7 +181,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(back_btn), parse_mode="Markdown"
         )
 
-# استقبال الرسائل النصية المباشرة (للإضافة أو تسجيل المبلغ بدون أوامر)
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = context.user_data.get('step')
     back_btn = [[InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="main_menu")]]
@@ -233,6 +245,10 @@ def monthly_rent_update():
     conn.close()
 
 if __name__ == '__main__':
+    # تشغيل خادم الويب الوهمي في الخلفية ليتوافق مع Render المجاني (Web Service)
+    server_thread = threading.Thread(target=run_web_server, daemon=True)
+    server_thread.start()
+
     TOKEN = "8602954639:AAF3pr8tk4ns8WogFsAlDCITQrtcl7BQAL4"
     
     app = ApplicationBuilder().token(TOKEN).build()
@@ -245,5 +261,5 @@ if __name__ == '__main__':
     scheduler.add_job(monthly_rent_update, 'cron', day=1, hour=0, minute=0)
     scheduler.start()
 
-    print("البوت يعمل الآن بنظام الأزرار بالكامل...")
+    print("البوت يعمل الآن بنظام الأزرار والخادم الوهمي...")
     app.run_polling()
